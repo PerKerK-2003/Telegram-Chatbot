@@ -1,0 +1,8 @@
+Ghi lại:
+- Môi trường dùng để code
+- Ngôn ngữ,công nghệ sử dụng
+- Nguồn tài liệu
+Báo cáo mỗi thứ 6
+
+Telegram Bot API: 8173387407:AAGQeVh2AJMASODbOqcMvszB1HY3toqDmmg
+Gemini API: AIzaSyDiBn9KGVP0a2wXjbhKP4IpL0iXXzpB_NM
