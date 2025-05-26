@@ -24,13 +24,10 @@ async function askGemini(context, question) {
 
 async function askGeminiWithImage(imageUrl, prompt) {
   try {
-    // 1. Download the image from Telegram
     await new Promise((resolve) => setTimeout(resolve, 5000)); // 1.5s delay
     const response = await fetch(imageUrl);
     const imageArrayBuffer = await response.arrayBuffer();
     const base64Image = Buffer.from(imageArrayBuffer).toString("base64");
-
-    // 3. Send request to Gemini with the base64 image data
 
     const data = {
       contents: [
@@ -54,7 +51,6 @@ async function askGeminiWithImage(imageUrl, prompt) {
       headers: { "Content-Type": "application/json" },
     });
 
-    // Return the text response from Gemini
     return result.data.candidates[0].content.parts[0].text;
   } catch (error) {
     console.error(
@@ -66,4 +62,48 @@ async function askGeminiWithImage(imageUrl, prompt) {
   }
 }
 
-module.exports = { askGemini, askGeminiWithImage };
+async function extractQAFromText(userInput) {
+  const prompt = `
+Xác định xem người dùng có đang dạy bot một câu hỏi và câu trả lời không. Nếu có, trích xuất chúng dưới dạng JSON như sau:
+{"question": "Câu hỏi trước đó", "answer": "Câu trả lời ở đây"}
+Nếu không phải, trả về null.
+
+Dữ liệu đầu vào:
+"""${userInput}"""
+`;
+
+  const data = {
+    contents: [
+      {
+        parts: [{ text: prompt }],
+      },
+    ],
+  };
+
+  try {
+    const res = await axios.post(url, data, {
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) return null;
+
+    const match = text.match(/\{.*\}/s); // extract JSON part
+    if (!match) return null;
+
+    const parsed = JSON.parse(match[0]);
+    if (parsed.question && parsed.answer) {
+      return parsed;
+    }
+
+    return null;
+  } catch (error) {
+    console.error(
+      "Lỗi khi phân tích Q&A:",
+      error.response?.data || error.message
+    );
+    return null;
+  }
+}
+
+module.exports = { askGemini, askGeminiWithImage, extractQAFromText };

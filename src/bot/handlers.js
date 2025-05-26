@@ -1,20 +1,34 @@
-const { askGemini, askGeminiWithImage } = require("../utils/gemini");
-const { getFAQs } = require("../services/faqs_service");
+const {
+  askGemini,
+  askGeminiWithImage,
+  extractQAFromText,
+} = require("../utils/gemini");
+const { getFAQs, addOrUpdateFAQ } = require("../services/faqs_service");
 const { logUniqueQuestion } = require("../services/logQuestion_service");
+const stopwords = require("stopwords-vi");
+
+const conversationHistory = new Map();
+
+const MAX_HISTORY_LENGTH = 10;
+
+const greetings = ["hello", "xin chào"];
+
+function extractBoldAnswer(response) {
+  const match = response.match(/\*\*(.*?)\*\*/);
+  return match ? match[1].trim() : response.trim();
+}
+
+function normalize(str) {
+  return str
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !stopwords.includes(word))
+    .join(" ");
+}
 
 function calculateSimilarity(str1, str2) {
-  const set1 = new Set(
-    str1
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((word) => word.length > 2)
-  );
-  const set2 = new Set(
-    str2
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((word) => word.length > 2)
-  );
+  const set1 = new Set(normalize(str1).split(/\s+/));
+  const set2 = new Set(normalize(str2).split(/\s+/));
 
   const intersection = new Set([...set1].filter((x) => set2.has(x)));
 
@@ -36,7 +50,7 @@ function findRelevantFAQs(faqs, question) {
 }
 
 function formatContext(faqs) {
-  let context = "Dưới đây là thông tin hỗ trợ liên quan nhất:\n\n";
+  let context = "Dưới đây là thông tin hỗ trợ liên quan nhất nếu có:\n\n";
 
   faqs.forEach((faq, index) => {
     context += `${index + 1}. Câu hỏi: ${faq.message}\n   Trả lời: ${
@@ -45,9 +59,39 @@ function formatContext(faqs) {
   });
 
   context +=
-    "Hãy trả lời câu hỏi của người dùng dựa trên thông tin trên. Nếu không có thông tin liên quan, hãy cho biết bạn không có đủ thông tin và yêu cầu thêm chi tiết. Hãy trả lời bằng tiếng Việt và giữ giọng điệu thân thiện, chuyên nghiệp.";
+    "Hãy trả lời câu hỏi của người dùng dựa trên thông tin trên. Hãy trả lời bằng tiếng Việt và giữ giọng điệu thân thiện, chuyên nghiệp. Nếu không có thông tin hỗ trợ nào, hãy sử dụng kiến thức chung của bạn để trả lời.";
 
   return context;
+}
+
+function getConversationHistory(chatId) {
+  if (!conversationHistory.has(chatId)) {
+    conversationHistory.set(chatId, []);
+  }
+  return conversationHistory.get(chatId);
+}
+
+function addToConversationHistory(chatId, userMessage, botResponse) {
+  const history = getConversationHistory(chatId);
+
+  history.push({
+    user: userMessage,
+    bot: botResponse,
+    timestamp: new Date().toISOString(),
+  });
+
+  if (history.length > MAX_HISTORY_LENGTH) {
+    history.shift();
+  }
+
+  conversationHistory.set(chatId, history);
+}
+
+function formatConversationHistory(history) {
+  if (!history || history.length === 0) return "";
+  return history
+    .map((turn, i) => `Người dùng: ${turn.user}\nBot: ${turn.bot}`)
+    .join("\n");
 }
 
 async function handleImageMessage(bot, msg, chatId) {
@@ -67,13 +111,38 @@ async function handleImageMessage(bot, msg, chatId) {
       msg.caption ||
       "Hãy mô tả nội dung trong hình ảnh này và cung cấp thông tin hỗ trợ nếu liên quan.";
 
-    const contextPrompt = `${prompt}\n\nDựa trên thông tin hỗ trợ sau:\n${faqs
-      .map((faq) => `- ${faq.message}: ${faq.answer}`)
-      .join("\n")}`;
+    const history = getConversationHistory(chatId);
+    const conversationContext = formatConversationHistory(history);
+
+    const contextPrompt = formatContext(faqs) + conversationContext + prompt;
+
+    const qa = await extractQAFromText(contextPrompt);
+    console.log("QA:", qa);
+
+    if (qa) {
+      await addOrUpdateFAQ(qa.question, qa.answer);
+      return bot.sendMessage(
+        chatId,
+        `✅ Đã ghi nhớ:\n🧠 Câu hỏi: ${qa.question}\n💡 Trả lời: ${qa.answer}`
+      );
+    }
 
     const geminiResponse = await askGeminiWithImage(fileLink, contextPrompt);
-    await logUniqueQuestion(1, prompt, fileLink, geminiResponse);
-    bot.sendMessage(chatId, geminiResponse);
+    const conciseAnswer = extractBoldAnswer(geminiResponse);
+
+    addToConversationHistory(chatId, contextPrompt, conciseAnswer);
+
+    await addOrUpdateFAQ(contextPrompt, conciseAnswer);
+    bot.sendMessage(chatId, geminiResponse, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "👍 Giúp ích", callback_data: "feedback_helpful" },
+            { text: "👎 Không hữu ích", callback_data: "feedback_not_helpful" },
+          ],
+        ],
+      },
+    });
   } catch (err) {
     console.error("Có lỗi xảy ra trong quá trình xử lý ảnh:", err);
     bot.sendMessage(
@@ -86,7 +155,6 @@ async function handleImageMessage(bot, msg, chatId) {
 async function handleMessage(bot, msg) {
   const chatId = msg.chat.id;
 
-  // Send typing indicator
   bot.sendChatAction(chatId, "typing");
 
   if (msg.photo) {
@@ -103,22 +171,84 @@ async function handleMessage(bot, msg) {
     return;
   }
 
+  if (greetings.some((greet) => question.toLowerCase().includes(greet))) {
+    bot.sendMessage(
+      chatId,
+      "Chào bạn! Tôi là trợ lý AI, bạn cần tôi giúp gì hôm nay?"
+    );
+    addToConversationHistory(
+      chatId,
+      question,
+      "Chào bạn! Tôi là trợ lý AI, bạn cần tôi giúp gì hôm nay?"
+    );
+    return;
+  }
+
   try {
-    // Retrieve and process FAQs
+    const history = getConversationHistory(chatId);
+    const conversationContext = formatConversationHistory(history);
+
     const faqs = await getFAQs();
+
     const relevantFAQs = findRelevantFAQs(faqs, question);
-    const context = formatContext(relevantFAQs);
+    console.log("Relevant FAQs:", relevantFAQs);
 
-    // If we have no relevant FAQs, include a few general ones
-    const finalContext =
-      relevantFAQs.length === 0 ? formatContext(faqs.slice(0, 3)) : context;
+    let faqContext = formatContext(relevantFAQs);
 
-    // Generate response with improved prompt
-    const enhancedPrompt = `Câu hỏi người dùng: "${question}"\n\n${finalContext}`;
+    const qa = await extractQAFromText(question);
+    console.log("QA:", qa);
+
+    if (qa) {
+      await addOrUpdateFAQ(qa.question, qa.answer);
+      return bot.sendMessage(
+        chatId,
+        `✅ Đã ghi nhớ:\n🧠 Câu hỏi: ${qa.question}\n💡 Trả lời: ${qa.answer}`
+      );
+    }
+
+    const enhancedPrompt = `
+      Bạn là một trợ lý AI. Dưới đây là lịch sử trò chuyện gần đây nếu có:
+      ${conversationContext}
+      ${faqContext}
+
+      Câu hỏi: "${question.trim()}"
+      Hãy trả lời bằng tiếng Việt và cố gắng cung cấp câu trả lời ngắn gọn, súc tích.
+      `;
+    console.log("Enhanced Prompt:", enhancedPrompt);
     const response = await askGemini(enhancedPrompt, question);
+    const conciseAnswer = extractBoldAnswer(response);
 
-    await logUniqueQuestion(1, question, null, response);
-    bot.sendMessage(chatId, response);
+    if (relevantFAQs.length > 0) {
+      const mostRelevantFAQ = relevantFAQs[0];
+      const similarityScore = calculateSimilarity(
+        question,
+        mostRelevantFAQ.message
+      );
+
+      if (similarityScore > 0.7) {
+        console.log(
+          "Question: ",
+          mostRelevantFAQ.message + " | Answer: ",
+          mostRelevantFAQ.answer
+        );
+        addToConversationHistory(chatId, question, mostRelevantFAQ.answer);
+        addOrUpdateFAQ(mostRelevantFAQ.message, mostRelevantFAQ.answer);
+      } else {
+        addToConversationHistory(chatId, question, conciseAnswer);
+        await addOrUpdateFAQ(question, conciseAnswer);
+      }
+    }
+
+    bot.sendMessage(chatId, response, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "👍 Giúp ích", callback_data: "feedback_helpful" },
+            { text: "👎 Không hữu ích", callback_data: "feedback_not_helpful" },
+          ],
+        ],
+      },
+    });
   } catch (err) {
     console.error("Có lỗi xảy ra khi xử lý tin nhắn:", err);
     bot.sendMessage(
@@ -128,4 +258,31 @@ async function handleMessage(bot, msg) {
   }
 }
 
-module.exports = handleMessage;
+function clearConversationHistory(chatId) {
+  conversationHistory.delete(chatId);
+  return "Lịch sử trò chuyện đã được xóa.";
+}
+
+function handleCommand(bot, msg) {
+  const chatId = msg.chat.id;
+  const command = msg.text;
+
+  if (command === "/clear_history") {
+    const response = clearConversationHistory(chatId);
+    bot.sendMessage(chatId, response);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleMessageOrCommand(bot, msg) {
+  if (msg.text && msg.text.startsWith("/")) {
+    const handled = handleCommand(bot, msg);
+    if (handled) return;
+  }
+
+  await handleMessage(bot, msg);
+}
+
+module.exports = handleMessageOrCommand;
