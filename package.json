@@ -1,9 +1,11 @@
 {
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@pinecone-database/pinecone": "^6.1.0",
     "axios": "^1.9.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "googleapis": "^149.0.0",
     "knex": "^3.1.0",
     "mysql2": "^3.14.1",
     "node-telegram-bot-api": "^0.66.0",
