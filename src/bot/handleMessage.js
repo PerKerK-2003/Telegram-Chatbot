@@ -1,6 +1,10 @@
-const { insertFAQ } = require("../services/faqs_service");
+const {
+  insertFAQ,
+  getRootMessage,
+  getHistoryConversation,
+  getLatestAnswer,
+} = require("../services/faqs_service");
 const { askGemini, extractQAFromTextWithRetry } = require("../utils/gemini");
-const ConversationHistory = require("../utils/conversation");
 const handleImageMessage = require("./handleImage");
 const {
   saveTextEmbedding,
@@ -10,11 +14,12 @@ const {
 const { insertSupportMessageToSheet } = require("../sheet/googleSheet");
 
 const greetings = ["hello", "xin chào"];
-const conversationHistory = new ConversationHistory();
 
 async function handleMessage(bot, msg) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
+  const messageId = msg.message_id;
+  let rootMessage;
 
   bot.sendChatAction(chatId, "typing");
 
@@ -37,23 +42,17 @@ async function handleMessage(bot, msg) {
       chatId,
       "Chào bạn! Tôi là trợ lý AI, bạn cần tôi giúp gì hôm nay?"
     );
-    conversationHistory.addMessage(
-      userId,
-      chatId,
-      question,
-      "Chào bạn! Tôi là trợ lý AI, bạn cần tôi giúp gì hôm nay?"
-    );
     return;
   }
 
   try {
-    console.log("Analyzing user intent for:", question);
+    console.log("Câu hỏi:", question);
     const userIntent = await extractQAFromTextWithRetry(question);
-    console.log("User intent detected:", userIntent);
+    console.log("Ý định của người dùng:", userIntent);
 
     if (userIntent.type === "teach") {
       console.log(
-        "User is teaching bot:",
+        "Người dùng đang dạy bot:",
         userIntent.question,
         "->",
         userIntent.answer
@@ -62,32 +61,30 @@ async function handleMessage(bot, msg) {
       await insertFAQ(
         userIntent.question,
         userIntent.answer,
-        msg.message_id,
-        msg.from.id,
-        msg.chat.id
+        messageId,
+        chatId,
+        userId
       );
+      rootMessage = await getRootMessage(messageId, chatId, userId);
 
       await saveTextEmbedding(
-        msg.from.id,
+        messageId,
+        userId,
         chatId,
         userIntent.question,
-        userIntent.answer
+        userIntent.answer,
+        rootMessage ? rootMessage : ""
       );
 
       await insertSupportMessageToSheet(
         userIntent.question,
         userIntent.answer,
-        msg.message_id,
-        msg.from.id,
-        msg.chat.id,
-        new Date().toISOString()
-      );
-
-      conversationHistory.addMessage(
+        messageId,
         userId,
         chatId,
-        question,
-        userIntent.answer
+        new Date().toISOString(),
+        "",
+        rootMessage ? rootMessage : ""
       );
 
       return bot.sendMessage(
@@ -96,85 +93,47 @@ async function handleMessage(bot, msg) {
       );
     }
 
-    const followUpContext = conversationHistory.getFollowUpContext(
-      userId,
-      chatId
-    );
-    const conversationContext = conversationHistory.formatForGemini(
-      userId,
-      chatId
-    );
+    const conversationHistory = await getHistoryConversation(chatId, userId);
 
-    let relevantFAQs;
-    let searchQuery = question;
+    const relevantFAQs = await findSimilarEmbeddings(question, 3);
 
-    if (followUpContext && followUpContext.isFollowUp) {
-      const contextualQuery = `${followUpContext.question} ${question}`;
-      relevantFAQs = await findSimilarEmbeddings(contextualQuery, 3);
+    console.log("Thông tin liên quan:", relevantFAQs.length);
+    console.log("Relevant FAQs:", relevantFAQs);
+    const latestAnswer = await getLatestAnswer(userId, chatId);
 
-      const currentRelevantFAQs = await findSimilarEmbeddings(question, 2);
-      const combinedFAQs = [...relevantFAQs, ...currentRelevantFAQs];
-      const uniqueFAQs = combinedFAQs.filter(
-        (faq, index, self) =>
-          index === self.findIndex((f) => f.question === faq.question)
-      );
-      relevantFAQs = uniqueFAQs.slice(0, 3);
-      searchQuery = contextualQuery;
-    } else {
-      relevantFAQs = await findSimilarEmbeddings(question, 3);
+    let enhancedPrompt = `Dưới đây là lịch sử trò chuyện nếu có: 
+    ${conversationHistory
+      .map((msg) => `- Người dùng: ${msg.question}\n  Bot: ${msg.answer}`)
+      .join("\n")};
+    Phản hồi gần nhất của bot: ${
+      latestAnswer ? latestAnswer.answer : "Không có phản hồi nào."
     }
-
-    console.log("Relevant FAQs found:", relevantFAQs.length);
-    console.log("Follow-up context:", followUpContext);
-
-    let enhancedPrompt = `Dưới đây là lịch sử trò chuyện gần đây nếu có: 
-    ${conversationContext}`;
-
-    if (followUpContext && followUpContext.isFollowUp) {
-      enhancedPrompt += `
-[QUAN TRỌNG] Đây là câu hỏi tiếp theo số ${followUpContext.followUpCount} về chủ đề "${followUpContext.lastTopic}".
-${followUpContext.contextualPrompt}`;
-    } else {
-      enhancedPrompt += `
-Hướng dẫn trả lời:
-- Nếu câu hỏi không rõ ràng, hãy yêu cầu người dùng cung cấp thêm thông tin
-- Cố gắng cung cấp câu trả lời chi tiết và đề xuất các hướng giải quyết
-- Sử dụng lịch sử trò chuyện để hiểu ngữ cảnh tốt hơn
-- Nếu không có thông tin hỗ trợ nào, hãy sử dụng kiến thức chung của bạn để trả lời
-- Liên hệ bộ phận hỗ trợ nếu cần thiết
-`;
-    }
+    Hướng dẫn trả lời:
+    - Nếu câu hỏi không rõ ràng, hãy yêu cầu người dùng cung cấp thêm thông tin
+    - Cố gắng cung cấp câu trả lời chi tiết và đề xuất các hướng giải quyết
+    - Sử dụng lịch sử trò chuyện để hiểu ngữ cảnh tốt hơn
+    - Nếu không có thông tin hỗ trợ nào, hãy sử dụng kiến thức chung của bạn để trả lời
+    - Liên hệ bộ phận hỗ trợ nếu cần thiết
+    `;
+    console.log("Enhanced prompt:", enhancedPrompt);
 
     if (relevantFAQs.length > 0) {
       const mostRelevantFAQ = relevantFAQs[0];
-      const similarityThreshold = followUpContext?.isFollowUp ? 0.95 : 0.98;
+      if (mostRelevantFAQ.score > 0.99) {
+        console.log("Điểm tương đồng gần nhất:", mostRelevantFAQ.score);
 
-      if (mostRelevantFAQ.score > similarityThreshold) {
-        console.log(
-          "Using direct FAQ match with score:",
-          mostRelevantFAQ.score
-        );
-
-        await insertFAQ(
-          question,
-          mostRelevantFAQ.answer,
-          msg.message_id,
-          msg.chat.id,
-          msg.from.id
-        );
         await insertSupportMessageToSheet(
           question,
           mostRelevantFAQ.answer,
-          msg.message_id,
-          msg.chat.id,
-          msg.from.id,
-          new Date().toISOString()
+          messageId,
+          chatId,
+          userId,
+          new Date().toISOString(),
+          "",
+          rootMessage ? rootMessage : ""
         );
 
-        let response = mostRelevantFAQ.answer;
-        if (followUpContext?.isFollowUp) {
-          response = `[Tiếp theo câu hỏi trước] ${response}`;
-        }
+        const response = mostRelevantFAQ.answer;
 
         bot.sendMessage(chatId, response, {
           reply_markup: {
@@ -189,38 +148,31 @@ Hướng dẫn trả lời:
             ],
           },
         });
-
-        conversationHistory.addMessage(userId, chatId, question, response);
         return;
       }
     }
-
-    console.log("Generating AI response...");
     const response = await askGemini(enhancedPrompt, question);
-
-    await saveTextEmbedding(msg.from.id, chatId, question, response);
-    await insertFAQ(
+    await insertFAQ(question, response, messageId, chatId, userId);
+    rootMessage = await getRootMessage(messageId, chatId, userId);
+    await saveTextEmbedding(
+      messageId,
+      userId,
+      chatId,
       question,
       response,
-      msg.message_id,
-      msg.chat.id,
-      msg.from.id
+      rootMessage ? rootMessage : ""
     );
     await insertSupportMessageToSheet(
       question,
       response,
-      msg.message_id,
-      msg.chat.id,
-      msg.from.id,
-      new Date().toISOString()
+      messageId,
+      chatId,
+      userId,
+      new Date().toISOString(),
+      "",
+      rootMessage ? rootMessage : ""
     );
-
-    let finalResponse = response;
-    if (followUpContext?.isFollowUp) {
-      finalResponse = `💬 ${response}`;
-    }
-
-    bot.sendMessage(chatId, finalResponse, {
+    bot.sendMessage(chatId, response, {
       reply_markup: {
         inline_keyboard: [
           [
@@ -233,8 +185,6 @@ Hướng dẫn trả lời:
         ],
       },
     });
-
-    conversationHistory.addMessage(userId, chatId, question, response);
   } catch (err) {
     console.error("Có lỗi xảy ra khi xử lý tin nhắn:", err);
     bot.sendMessage(

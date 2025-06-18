@@ -19,12 +19,12 @@ async function insertSupportMessageToSheet(
   chatId,
   userId,
   created_at,
-  imageId = ""
+  imageId = "",
+  rootMessage
 ) {
   const client = await auth.getClient();
   const sheets = google.sheets({ version: "v4", auth: client });
 
-  // Step 1: Insert a blank row at index 1 (2nd row in the sheet, under the header)
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SHEET_ID,
     requestBody: {
@@ -44,9 +44,17 @@ async function insertSupportMessageToSheet(
     },
   });
 
-  // Step 2: Write the new data to that inserted row
   const rowData = [
-    [message, response, messageId, chatId, userId, created_at, imageId || ""],
+    [
+      message,
+      response,
+      messageId,
+      chatId,
+      userId,
+      created_at,
+      imageId || "",
+      rootMessage,
+    ],
   ];
 
   await sheets.spreadsheets.values.update({

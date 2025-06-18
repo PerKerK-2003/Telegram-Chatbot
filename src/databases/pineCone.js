@@ -7,6 +7,15 @@ const pinecone = new Pinecone({
 
 const index = pinecone.index(process.env.PINECONE_INDEX_NAME);
 
+async function getVector(id) {
+  const match = await index.fetch([id]);
+
+  if (!match || !match.records) {
+    throw new Error(`Vector '${id}' không tồn tại trong cơ sở dữ liệu.`);
+  }
+  return match;
+}
+
 async function upsertVector(id, vector, metadata = {}) {
   await index.upsert([
     {
@@ -24,7 +33,26 @@ async function queryVector(vector, topK = 3) {
     includeMetadata: true,
   });
 
-  return result.matches;
+  // Filter out matches with supportStatus === false
+  const filtered = result.matches.filter(
+    (match) => match.metadata?.supportStatus !== false
+  );
+
+  return filtered;
 }
 
-module.exports = { upsertVector, queryVector };
+async function updateSPStatus(id, newStatus) {
+  const match = await getVector(id);
+
+  const { metadata } = match.records;
+
+  await index.update({
+    id: id.toString(),
+    metadata: {
+      ...metadata,
+      supportStatus: newStatus,
+    },
+  });
+}
+
+module.exports = { upsertVector, queryVector, updateSPStatus, getVector };

@@ -1,26 +1,21 @@
-const { conversationHistory } = require("../utils/conservation");
+const ConversationHistory = require("../utils/conversation");
+const conversationHistory = new ConversationHistory();
 
-function clearConversationHistory(chatId) {
-  conversationHistory.delete(chatId);
+function clearConversationHistory(userId, chatId) {
+  conversationHistory.clearHistory(userId, chatId);
   return "Lịch sử trò chuyện đã được xóa.";
 }
 
 function handleCommand(bot, msg) {
   const chatId = msg.chat.id;
+  const userId = msg.from.id;
   const command = msg.text;
 
   if (command === "/clear_history") {
-    const response = clearConversationHistory(chatId);
+    const response = clearConversationHistory(userId, chatId);
     bot.sendMessage(chatId, response);
     return true;
   }
-
-  if (command === "/teach") {
-    const response = "Bạn đang dạy bot một câu hỏi và câu trả lời.";
-    bot.sendMessage(chatId, response);
-    return true;
-  }
-
   return false;
 }
 

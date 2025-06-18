@@ -1,4 +1,5 @@
 const handleMessage = require("./handleMessage");
+const handleCommand = require("./handleCommand");
 
 async function handleMessageOrCommand(bot, msg) {
   if (msg.text && msg.text.startsWith("/")) {

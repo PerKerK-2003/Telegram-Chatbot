@@ -1,27 +1,34 @@
-const { upsertVector, queryVector } = require("../databases/pineCone");
+const {
+  upsertVector,
+  queryVector,
+  updateSPStatus,
+} = require("../databases/pineCone");
 const { generateEmbedding } = require("../utils/gemini");
 
-async function saveTextEmbedding(userId, chatId, question, answer) {
+async function saveTextEmbedding(
+  messageId,
+  userId,
+  chatId,
+  question,
+  answer,
+  imageId = null,
+  rootMessage
+) {
   try {
-    const existingEmbeddings = await findSimilarEmbeddings(question, 1);
-    if (existingEmbeddings[0].score > 0.98) {
-      console.log(
-        "Embedding đã tồn tại, không cần lưu lại:",
-        existingEmbeddings[0]
-      );
-      return existingEmbeddings[0].id; // Trả về ID của embedding đã tồn tại
-    }
     const embedding = await generateEmbedding(question);
     if (!embedding) {
       throw new Error("Không thể tạo embedding cho văn bản.");
     }
 
-    const id = `${userId}-${chatId}-${Date.now()}`;
+    const id = `${messageId}`;
     await upsertVector(id, embedding, {
       userId,
       chatId,
       question,
       answer,
+      imageId,
+      rootMessage,
+      supportStatus: false,
       timestamp: new Date().toISOString(),
     });
 
@@ -51,7 +58,18 @@ async function findSimilarEmbeddings(question, limit = 1) {
   }
 }
 
+async function updateSupportStatus(vectorId, newStatus) {
+  try {
+    await updateSPStatus(vectorId, newStatus);
+    console.log(`Đã cập nhật supportStatus cho vector ${vectorId}`);
+  } catch (error) {
+    console.error("Lỗi khi cập nhật trạng thái hỗ trợ:", error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   saveTextEmbedding,
   findSimilarEmbeddings,
+  updateSupportStatus,
 };
