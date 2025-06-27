@@ -3,10 +3,7 @@ const {
   getHistoryConversation,
   getRootMessage,
 } = require("../services/faqs_service");
-const {
-  askGeminiWithImage,
-  extractQAFromTextWithRetry,
-} = require("../utils/gemini");
+const { askGeminiWithImage } = require("../utils/gemini");
 const {
   saveTextEmbedding,
   findSimilarEmbeddings,
@@ -26,53 +23,6 @@ async function handleImageMessage(bot, msg, chatId) {
     const prompt = msg.caption || "Đây là hình ảnh liên quan";
 
     console.log("Câu hỏi:", prompt);
-    const userIntent = await extractQAFromTextWithRetry(prompt);
-    console.log("Ý định của người dùng:", userIntent);
-
-    if (userIntent.type === "teach") {
-      console.log(
-        "Người dùng đang dạy bot với hình ảnh:",
-        userIntent.question,
-        "->",
-        userIntent.answer
-      );
-
-      await insertFAQ(
-        userIntent.question,
-        userIntent.answer,
-        messageId,
-        chatId,
-        userId,
-        fileId
-      );
-      rootMessage = await getRootMessage(messageId, chatId, userId);
-
-      await saveTextEmbedding(
-        messageId,
-        userId,
-        chatId,
-        userIntent.question,
-        userIntent.answer,
-        fileId,
-        rootMessage ? rootMessage : ""
-      );
-
-      await insertSupportMessageToSheet(
-        userIntent.question,
-        userIntent.answer,
-        messageId,
-        chatId,
-        userId,
-        new Date().toISOString(),
-        fileId,
-        rootMessage ? rootMessage : ""
-      );
-
-      return bot.sendMessage(
-        chatId,
-        `✅ Đã học được thông tin mới từ hình ảnh!\n\n🧠 **Câu hỏi:** ${userIntent.question}\n💡 **Trả lời:** ${userIntent.answer}\n🖼️ **Kèm theo:** Hình ảnh minh họa\n\nTôi sẽ nhớ điều này để trả lời các câu hỏi tương tự sau.`
-      );
-    }
 
     const conversationHistory = await getHistoryConversation(chatId, userId);
 
@@ -84,10 +34,10 @@ async function handleImageMessage(bot, msg, chatId) {
       .join("\n")};
     Hướng dẫn phân tích hình ảnh:
     - Sử dụng lịch sử trò chuyện để hiểu ngữ cảnh tốt hơn
-    - Phân tích hình ảnh trong ngữ cảnh của cuộc trò chuyện trước
-    - Trả lời dựa trên những gì bạn thấy trong hình ảnh
+    - Trả lời dựa trên những thông tin bạn thấy trong hình ảnh
+    - Cung cấp các nguyên nhân có thể gây ra vấn đề và đề xuất các hướng giải quyết
     - Nếu hình ảnh không rõ ràng, hãy tham khảo ngữ cảnh trước đó để hiểu ý định
-    - Liên hệ bộ phận hỗ trợ nếu cần thiết
+    - Nếu đã đầy đủ thông tin thì trả lời đã tiếp nhận câu hỏi và sẽ chuyển đến bộ phận hỗ trợ
     Câu hỏi/Mô tả: ${prompt}`;
     console.log("Prompt:", contextPrompt);
 
@@ -98,6 +48,23 @@ async function handleImageMessage(bot, msg, chatId) {
         console.log("Điểm tương đồng gần nhất:", mostRelevantFAQ.score);
 
         const response = mostRelevantFAQ.answer;
+        bot.sendMessage(chatId, response, {
+          reply_to_message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: "👍 Giúp ích",
+                  callback_data: `feedback_helpful_${messageId}`,
+                },
+                {
+                  text: "👎 Không hữu ích",
+                  callback_data: `feedback_not_helpful_${messageId}`,
+                },
+              ],
+            ],
+          },
+        });
         await insertSupportMessageToSheet(
           prompt,
           response,
@@ -108,25 +75,28 @@ async function handleImageMessage(bot, msg, chatId) {
           fileId,
           rootMessage ? rootMessage : ""
         );
-
-        return bot.sendMessage(chatId, response, {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "👍 Giúp ích", callback_data: "feedback_helpful" },
-                {
-                  text: "👎 Không hữu ích",
-                  callback_data: "feedback_not_helpful",
-                },
-              ],
-            ],
-          },
-        });
+        return;
       }
     }
 
     const geminiResponse = await askGeminiWithImage(fileLink, contextPrompt);
-
+    const sentMessage = await bot.sendMessage(chatId, geminiResponse, {
+      reply_to_message_id: messageId,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "👍 Giúp ích",
+              callback_data: `feedback_helpful_${messageId}`,
+            },
+            {
+              text: "👎 Không hữu ích",
+              callback_data: `feedback_not_helpful_${messageId}`,
+            },
+          ],
+        ],
+      },
+    });
     await saveTextEmbedding(
       messageId,
       userId,
@@ -136,7 +106,15 @@ async function handleImageMessage(bot, msg, chatId) {
       fileId,
       rootMessage ? rootMessage : ""
     );
-    await insertFAQ(prompt, geminiResponse, messageId, chatId, userId, fileId);
+    await insertFAQ(
+      prompt,
+      geminiResponse,
+      messageId,
+      sentMessage.message_id,
+      chatId,
+      userId,
+      fileId
+    );
     rootMessage = await getRootMessage(messageId, chatId, userId);
     await insertSupportMessageToSheet(
       prompt,
@@ -148,17 +126,6 @@ async function handleImageMessage(bot, msg, chatId) {
       fileId,
       rootMessage ? rootMessage : ""
     );
-
-    bot.sendMessage(chatId, geminiResponse, {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "👍 Giúp ích", callback_data: "feedback_helpful" },
-            { text: "👎 Không hữu ích", callback_data: "feedback_not_helpful" },
-          ],
-        ],
-      },
-    });
   } catch (err) {
     console.error("Có lỗi xảy ra trong quá trình xử lý ảnh:", err);
     bot.sendMessage(

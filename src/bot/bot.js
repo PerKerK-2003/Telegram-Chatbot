@@ -1,36 +1,38 @@
 const TelegramBot = require("node-telegram-bot-api");
-const handleMessageOrCommand = require("./handlers");
-const {
-  updateFAQ,
-  updateHelpfulResponse,
-} = require("../services/faqs_service");
+const messageHandler = require("./handlers");
+const { updateFAQ } = require("../services/faqs_service");
 const { updateSupportStatus } = require("../embedding/textEmbedding");
 
 function initializeBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
     polling: true,
   });
-  bot.on("message", (msg) => handleMessageOrCommand(bot, msg));
-  bot.on("callback_query", (callbackQuery) => {
+  bot.on("message", async (msg) => {
+    messageHandler(bot, msg);
+  });
+  bot.on("callback_query", async (callbackQuery) => {
     const msg = callbackQuery.message;
     const chatId = msg.chat.id;
-    const messageId = msg.message_id;
     const userId = msg.from.id;
     const data = callbackQuery.data;
-    if (data === "feedback_helpful") {
+    const helpfulMatch = data.match(/^feedback_helpful_(\d+)$/);
+    const notHelpfulMatch = data.match(/^feedback_not_helpful_(\d+)$/);
+
+    if (helpfulMatch) {
+      const rootMessageId = parseInt(helpfulMatch[1], 10);
+      console.log(`User ${userId} marked FAQ ${rootMessageId} as helpful`);
       bot.answerCallbackQuery(callbackQuery.id, {
         text: "Cảm ơn đánh giá hữu ích của bạn! 🙏",
       });
-      updateFAQ(1, messageId, chatId, userId);
-      updateSupportStatus(messageId - 1, true);
-      updateHelpfulResponse(messageId, chatId, userId);
-    } else if (data === "feedback_not_helpful") {
+      updateFAQ(1, rootMessageId, chatId);
+      updateSupportStatus(rootMessageId, true);
+    } else if (notHelpfulMatch) {
+      const rootMessageId = parseInt(notHelpfulMatch[1], 10);
       bot.answerCallbackQuery(callbackQuery.id, {
         text: "Xin lỗi, chúng tôi sẽ cố gắng cải thiện nó!",
       });
-      updateFAQ(0, messageId, chatId, userId);
-      updateSupportStatus(messageId - 1, false);
-      updateHelpfulResponse(messageId, chatId, userId);
+      updateFAQ(-1, rootMessageId, chatId);
+      updateSupportStatus(rootMessageId, false);
     }
   });
 

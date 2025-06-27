@@ -33,12 +33,14 @@ async function queryVector(vector, topK = 3) {
     includeMetadata: true,
   });
 
-  // Filter out matches with supportStatus === false
-  const filtered = result.matches.filter(
-    (match) => match.metadata?.supportStatus !== false
-  );
-
-  return filtered;
+  if (!result || !result.matches) {
+    throw new Error("Không tìm thấy kết quả tương tự.");
+  }
+  return result.matches.map((match) => ({
+    id: match.id,
+    score: match.score,
+    metadata: match.metadata,
+  }));
 }
 
 async function updateSPStatus(id, newStatus) {

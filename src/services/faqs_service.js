@@ -15,6 +15,7 @@ async function insertFAQ(
   message,
   answer,
   messageId,
+  botMessageId,
   chatId,
   userId,
   image = null
@@ -28,50 +29,44 @@ async function insertFAQ(
       const latestAnswer = await getLatestAnswer(userId, chatId);
       const latestQuestion = await getLatestQuestion(userId, chatId);
       if (
+        latestAnswer &&
+        latestQuestion &&
         latestAnswer.support_status == 0 &&
         Date.now() - latestQuestion.created_at < 10 * 60 * 1000
       ) {
         console.log("Time:", Date.now() - latestQuestion.created_at);
-        const [insertedSupport] = await db("support")
-          .insert({
-            message_text: message,
-            user_id: userId,
-            message_id: messageId,
-            root_message: latestQuestion.root_message
-              ? latestQuestion.root_message
-              : latestQuestion.message_id,
-            chat_id: chatId,
-            photo_id: image,
-          })
-          .returning("sp_id");
+        const insertedSupport = await db("support").insert({
+          message_text: message,
+          user_id: userId,
+          message_id: messageId,
+          root_message: latestQuestion.root_message,
+          chat_id: chatId,
+          photo_id: image,
+        });
 
-        const sp_id = insertedSupport.sp_id || insertedSupport;
-
+        const sp_id = insertedSupport[0];
         await db("support_detail").insert({
           sp_id: sp_id,
           text: answer,
           chat_id: chatId,
-          message_id: messageId + 1,
+          message_id: botMessageId,
           user_id: await getBotId(),
           rl_message_id: messageId,
-          root_message: latestQuestion.root_message
-            ? latestQuestion.root_message
-            : latestQuestion.message_id,
+          root_message: latestQuestion.root_message,
         });
         console.log("Câu hỏi và câu trả lời đã được thêm tiếp.");
+        return latestQuestion.root_message;
       } else {
-        const [insertedSupport] = await db("support")
-          .insert({
-            message_text: message,
-            user_id: userId,
-            message_id: messageId,
-            root_message: messageId,
-            chat_id: chatId,
-            photo_id: image,
-          })
-          .returning("sp_id");
+        const insertedSupport = await db("support").insert({
+          message_text: message,
+          user_id: userId,
+          message_id: messageId,
+          root_message: messageId,
+          chat_id: chatId,
+          photo_id: image,
+        });
 
-        const sp_id = insertedSupport.sp_id || insertedSupport;
+        const sp_id = insertedSupport[0];
 
         await db("support_detail").insert({
           sp_id: sp_id,
@@ -82,12 +77,13 @@ async function insertFAQ(
           rl_message_id: messageId,
           root_message: messageId,
         });
-        console.log("Câu hỏi và câu trả lời đã được thêm tiếp.");
+        console.log("Câu hỏi và câu trả lời đã được thêm.");
+        return messageId;
       }
     } else {
       console.log("Câu hỏi đã tồn tại.");
+      return existingFAQ.message_id;
     }
-    return messageId;
   } catch (error) {
     console.error("Có lỗi xảy ra khi thêm thông tin:", error);
   }
@@ -97,7 +93,7 @@ async function updateFAQ(support_status, messageId, chatId) {
   try {
     const updatedRows = await db("support_detail")
       .where({
-        message_id: messageId,
+        rl_message_id: messageId,
         chat_id: chatId,
         user_id: await getBotId(),
       })
@@ -136,6 +132,13 @@ async function getLatestQuestion(userId, chatId) {
 async function getLatestAnswer(userId, chatId) {
   try {
     const latestQuestion = await getLatestQuestion(userId, chatId);
+
+    // Nếu không có câu hỏi => không thể tìm câu trả lời
+    if (!latestQuestion) {
+      console.log("Không có câu hỏi nào để tìm câu trả lời.");
+      return null;
+    }
+
     const latestAnswer = await db("support_detail")
       .where({
         rl_message_id: latestQuestion.message_id,
@@ -147,6 +150,7 @@ async function getLatestAnswer(userId, chatId) {
         { column: "message_id", order: "desc" },
       ])
       .first();
+
     if (latestAnswer) {
       return latestAnswer;
     } else {
@@ -178,8 +182,9 @@ async function getRootMessage(messageId, chatId, userId) {
 async function getHistoryConversation(chatId, userId) {
   try {
     const latestMessage = await getLatestQuestion(userId, chatId);
-    const rootMessage =
-      latestMessage?.root_message || latestMessage?.message_id;
+    console.log("Latest message:", latestMessage);
+    const rootMessage = latestMessage.root_message;
+
     console.log("Lấy rootMessage:", rootMessage);
     const history = await db("support as sp")
       .join("support_detail as spd", "sp.id", "spd.sp_id")
@@ -197,28 +202,65 @@ async function getHistoryConversation(chatId, userId) {
   }
 }
 
-async function updateHelpfulResponse(messageId, chatId, userId) {
+async function getHelpfulResponses(rootMessage, chatId) {
   try {
-    const helpfulResponse = await db("support_detail")
+    const responses = await db("support_detail")
       .where({
-        user_id: userId,
         chat_id: chatId,
-        message_id: messageId,
+        root_message: rootMessage,
         support_status: 1,
       })
+      .select("text")
       .first();
-    if (helpfulResponse) {
-      await db("support")
-        .join("support_detail", "support.id", "support_detail.sp_id")
-        .where({
-          "support.message_id": helpfulResponse.root_message,
-          "support_detail.rl_message_id": messageId,
-        })
-        .update({ text: helpfulResponse.text });
-      console.log("Cập nhật phản hồi hữu ích thành công.");
+    console.log("Responses:", responses);
+    return responses ? responses : null;
+  } catch (error) {
+    console.error("Lỗi khi lấy phản hồi hữu ích:", error);
+    return;
+  }
+}
+
+async function continueSession(chatId, userId) {
+  try {
+    const latestAnswer = await getLatestAnswer(userId, chatId);
+    console.log("Latest answer:", latestAnswer);
+    if (!latestAnswer) {
+      console.log("Không có câu hỏi nào để tiếp tục.");
+      return null;
+    }
+    if (latestAnswer.support_status === -1) {
+      await updateFAQ(0, latestAnswer.rl_message_id, chatId);
+      console.log(
+        "Cập nhật trạng thái hỗ trợ cho câu hỏi:",
+        latestAnswer.rl_message_id
+      );
+    }
+    return latestAnswer;
+  } catch (error) {
+    console.error("Lỗi khi tiếp tục phiên:", error);
+    return null;
+  }
+}
+
+async function expireOldSessions(userId, chatId) {
+  try {
+    const latestAnswer = await getLatestAnswer(userId, chatId);
+    if (!latestAnswer) {
+      console.log("Không có câu hỏi nào để xử lý.");
+      return;
+    }
+    const expirationTime = 10 * 60 * 1000; // 10 phút
+    const timePass = Date.now() - new Date(latestAnswer.created_at).getTime();
+    if (timePass > expirationTime && latestAnswer.support_status === 0) {
+      console.log("Phiên đã hết hạn, cập nhật trạng thái hỗ trợ.");
+      console.log(
+        "Cập nhật trạng thái hỗ trợ cho câu hỏi:",
+        latestAnswer.rl_message_id
+      );
+      await updateFAQ(-1, latestAnswer.rl_message_id, chatId);
     }
   } catch (error) {
-    console.error("Lỗi khi cập nhật phản hồi hữu ích:", error);
+    console.error("Lỗi khi cập nhật trạng thái:", error);
   }
 }
 
@@ -230,5 +272,7 @@ module.exports = {
   getLatestAnswer,
   getRootMessage,
   getHistoryConversation,
-  updateHelpfulResponse,
+  getHelpfulResponses,
+  expireOldSessions,
+  continueSession,
 };
