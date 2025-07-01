@@ -37,8 +37,7 @@ async function handleImageMessage(bot, msg, chatId) {
     - Trả lời dựa trên những thông tin bạn thấy trong hình ảnh
     - Cung cấp các nguyên nhân có thể gây ra vấn đề và đề xuất các hướng giải quyết
     - Nếu hình ảnh không rõ ràng, hãy tham khảo ngữ cảnh trước đó để hiểu ý định
-    - Nếu đã đầy đủ thông tin thì trả lời đã tiếp nhận câu hỏi và sẽ chuyển đến bộ phận hỗ trợ
-    Câu hỏi/Mô tả: ${prompt}`;
+    - Liên hệ bộ phận hỗ trợ nếu người dùng yêu cầu hoặc khi cần thiếtthiết`;
     console.log("Prompt:", contextPrompt);
 
     if (relevantFAQs.length > 0) {

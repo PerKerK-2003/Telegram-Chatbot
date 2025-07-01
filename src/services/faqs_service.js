@@ -182,6 +182,10 @@ async function getRootMessage(messageId, chatId, userId) {
 async function getHistoryConversation(chatId, userId) {
   try {
     const latestMessage = await getLatestQuestion(userId, chatId);
+    if (!latestMessage) {
+      console.log("Không có câu hỏi nào để lấy lịch sử.");
+      return;
+    }
     console.log("Latest message:", latestMessage);
     const rootMessage = latestMessage.root_message;
 

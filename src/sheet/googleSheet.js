@@ -4,12 +4,14 @@ const path = require("path");
 const auth = new google.auth.GoogleAuth({
   keyFile: path.join(
     __dirname,
-    "../../credentials/gen-lang-client-0144459987-6832c2bfe09c.json"
+    "../../credentials/gen-lang-client-0144459987-3ee0eee2b980.json"
   ),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
 const SHEET_ID = process.env.SHEET_ID;
+console.log("SHEET_ID:", SHEET_ID);
+
 const SHEET_NAME = "SupportHistory";
 
 async function insertSupportMessageToSheet(

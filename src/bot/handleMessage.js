@@ -72,7 +72,7 @@ async function handleMessage(bot, msg) {
     - Cố gắng cung cấp câu trả lời chi tiết và đề xuất các hướng giải quyết cũng như nguyên nhân gây ra vấn đề
     - Sử dụng lịch sử trò chuyện để hiểu ngữ cảnh tốt hơn
     - Nếu không có thông tin hỗ trợ nào, hãy sử dụng kiến thức chung của bạn để trả lời
-    - Liên hệ bộ phận hỗ trợ nếu cần thiết
+    - Liên hệ bộ phận hỗ trợ nếu người dùng yêu cầu hoặc khi cần thiết
     `;
     //   Hướng dẫn trả lời:
     // - Cung cấp một số nguyên nhân phổ biến hoặc giải pháp cho câu hỏi
